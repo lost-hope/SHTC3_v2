@@ -19,6 +19,10 @@ private:
   uint32_t _lastReadMs = 0;
   uint32_t _checkIntervalMs = 60000;
 
+  enum SensorState : uint8_t { STATE_IDLE, STATE_WAKING, STATE_MEASURING };
+  SensorState _readState = STATE_IDLE;
+  uint32_t _stateStartMs = 0;
+
   static const uint8_t SHTC3_I2C_ADDRESS = 0x70;
 
   float _temperatureC = NAN;
@@ -115,23 +119,9 @@ public:
   }
 #endif
 
-  bool readSensor() {
+  // Called after the 15ms measurement window; reads and validates data over I2C.
+  bool finishReading() {
     uint8_t data[6] = {0};
-
-    if (!sendCommand(CMD_WAKEUP)) {
-      _sensorAvailable = false;
-      return false;
-    }
-
-    delay(1);
-
-    if (!sendCommand(CMD_MEASURE_T_RH)) {
-      _sensorAvailable = false;
-      return false;
-    }
-
-    // Datasheet conversion time is ~12ms, give it a small margin.
-    delay(15);
 
     if (Wire.requestFrom((int)SHTC3_I2C_ADDRESS, 6) != 6) {
       _sensorAvailable = false;
@@ -169,11 +159,14 @@ public:
 
 public:
   void setup() override {
-    _sensorAvailable = readSensor();
-
-    if (_sensorAvailable) {
-      DEBUG_PRINTLN(F("SHTC3: initialized"));
+    uint32_t now = millis();
+    if (sendCommand(CMD_WAKEUP)) {
+      _readState = STATE_WAKING;
+      _stateStartMs = now;
+      DEBUG_PRINTLN(F("SHTC3: initializing"));
     } else {
+      _sensorAvailable = false;
+      _lastReadMs = now;
       DEBUG_PRINTLN(F("SHTC3: sensor not found"));
     }
   }
@@ -183,16 +176,43 @@ public:
     if (strip.isUpdating()) return;
 
     uint32_t now = millis();
-    if (now - _lastReadMs < _checkIntervalMs) return;
 
-    _lastReadMs = now;
+    switch (_readState) {
+      case STATE_IDLE:
+        if (now - _lastReadMs >= _checkIntervalMs) {
+          if (sendCommand(CMD_WAKEUP)) {
+            _readState = STATE_WAKING;
+            _stateStartMs = now;
+          } else {
+            _sensorAvailable = false;
+            _lastReadMs = now;
+          }
+        }
+        break;
 
-    if (!_sensorAvailable) {
-      _sensorAvailable = readSensor();
-      if (!_sensorAvailable) return;
+      case STATE_WAKING:
+        // Datasheet wakeup time max 480µs; 1ms is sufficient margin.
+        if (now - _stateStartMs >= 1) {
+          if (sendCommand(CMD_MEASURE_T_RH)) {
+            _readState = STATE_MEASURING;
+            _stateStartMs = now;
+          } else {
+            _sensorAvailable = false;
+            _readState = STATE_IDLE;
+            _lastReadMs = now;
+          }
+        }
+        break;
+
+      case STATE_MEASURING:
+        // Datasheet conversion time ~12ms; 15ms gives a small margin.
+        if (now - _stateStartMs >= 15) {
+          finishReading();
+          _lastReadMs = now;
+          _readState = STATE_IDLE;
+        }
+        break;
     }
-
-    readSensor();
   }
 
   void addToJsonInfo(JsonObject &root) override {
