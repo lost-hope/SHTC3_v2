@@ -1,6 +1,6 @@
 {
   "name": "SHTC3_v2",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "keywords": "WLED,usermod,temperature,humidity,shtc3",
   "description": "WLED usermod for SHTC3 temperature/humidity sensor",
   "authors": {
